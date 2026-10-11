@@ -1,0 +1,16 @@
+# Build output
+build/
+relay/build/
+*.ipk
+
+# Experiment binaries
+experiments/apppassword/apppassword.exe
+
+# Editor files
+*.swp
+*~
+.vscode/
+.idea/
+
+# Probe test binary
+probe/probe

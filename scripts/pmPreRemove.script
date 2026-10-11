@@ -1,0 +1,11 @@
+#!/bin/sh
+# Run by webOS when the app is removed. Unpair, stop the relay, and take out
+# everything the post-install put outside the app's own folder (the app folder
+# itself webOS removes). The account record and stored messages go with /unpair.
+curl -s -m 20 -X POST -H "X-GMRelay: 1" http://127.0.0.1:7340/unpair >/dev/null 2>&1
+stop com.palm.stark.gmrelay 2>/dev/null
+killall gmrelay 2>/dev/null
+rm -f /var/palm/event.d/com.palm.stark.gmrelay
+rm -rf /media/cryptofs/apps/usr/palm/gmrelay
+rm -rf /media/cryptofs/apps/usr/palm/accounts/com.palm.stark.gmessages
+exit 0

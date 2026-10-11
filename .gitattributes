@@ -1,0 +1,12 @@
+* text=auto
+# These run on the TouchPad's shell and must stay Unix line endings.
+*.script text eol=lf
+*.sh text eol=lf
+scripts/* text eol=lf
+webos/com.palm.stark.gmrelay text eol=lf
+*.go text eol=lf
+# PowerShell tools are used on Windows.
+*.ps1 text eol=crlf
+# Binary assets.
+*.png binary
+*.ipk binary

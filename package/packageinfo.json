@@ -1,0 +1,8 @@
+{
+	"app": "com.palm.stark.gmessages",
+	"id": "com.palm.stark.gmessages",
+	"loc_name": "Google Messages",
+	"package_format_version": 2,
+	"vendor": "stark",
+	"version": "0.1.0"
+}

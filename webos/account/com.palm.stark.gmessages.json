@@ -1,0 +1,44 @@
+{
+	"templateId": "com.palm.stark.gmessages",
+	"loc_name": "Google Messages",
+	"icon": {
+		"loc_32x32": "images/gmessages-32x32.png",
+		"loc_48x48": "images/gmessages-48x48.png"
+	},
+	"validator": {
+		"customUI": {
+			"appId": "com.palm.stark.gmessages",
+			"name": "index.html"
+		},
+		"address": "palm://com.palm.stark.gmessages/validate"
+	},
+	"readPermissions": [
+		"com.palm.app.messaging",
+		"com.palm.stark.gmessages"
+	],
+	"writePermissions": [
+		"com.palm.app.accounts",
+		"com.palm.app.messaging",
+		"com.palm.stark.gmessages"
+	],
+	"capabilityProviders": [
+		{
+			"capability": "MESSAGING",
+			"capabilitySubtype": "IM",
+			"id": "com.palm.stark.gmessages.im",
+			"loc_name": "Google Messages",
+			"loc_shortName": "Text",
+			"icon": {
+				"loc_32x32": "images/gmessages-32x32.png",
+				"loc_48x48": "images/gmessages-48x48.png",
+				"splitter": "images/gmessages-32x32.png"
+			},
+			"serviceName": "type_gmessages",
+			"chatWithNonBuddies": true,
+			"dbkinds": {
+				"immessage": "com.palm.smsmessage.gmessages:1",
+				"imcommand": "com.palm.stark.gmessages.imcommand:1"
+			}
+		}
+	]
+}

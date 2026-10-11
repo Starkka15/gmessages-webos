@@ -1,0 +1,21 @@
+description "Google Messages relay"
+
+start on stopped finish
+
+respawn
+
+# The relay lives on the apps partition, which is mounted late in the boot.
+pre-start script
+   n=0
+   while [ ! -x /media/cryptofs/apps/usr/palm/gmrelay/gmrelay ] && [ $n -lt 60 ]; do
+      sleep 2
+      n=$((n+1))
+   done
+end script
+
+script
+   D=/media/cryptofs/apps/usr/palm/gmrelay
+   # Keep the last run's log, and no more.
+   [ -f $D/relay.log ] && mv -f $D/relay.log $D/relay.log.1
+   exec $D/gmrelay -dir $D/state -listen 127.0.0.1:7340 -webos >> $D/relay.log 2>&1
+end script

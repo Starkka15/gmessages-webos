@@ -1,0 +1,11 @@
+{
+	"id": "com.palm.stark.gmessages",
+	"version": "0.1.0",
+	"vendor": "stark",
+	"type": "web",
+	"main": "index.html",
+	"title": "Google Messages",
+	"icon": "images/icon.png",
+	"uiRevision": 2,
+	"keywords": ["Google Messages", "Texts", "SMS", "RCS", "Pairing"]
+}

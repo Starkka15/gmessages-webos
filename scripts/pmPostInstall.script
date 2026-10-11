@@ -1,0 +1,19 @@
+#!/bin/sh
+# Run by webOS right after the app is installed. The app package carries the relay
+# binary, the account description and the boot job inside the app's own folder;
+# put each where it belongs, then start the relay.
+APP=/media/cryptofs/apps/usr/palm/applications/com.palm.stark.gmessages
+D=/media/cryptofs/apps/usr/palm/gmrelay
+A=/media/cryptofs/apps/usr/palm/accounts/com.palm.stark.gmessages
+mkdir -p $D/state $A/images
+cp -f $APP/gmrelay $D/gmrelay
+chmod 755 $D/gmrelay
+cp -f $APP/account/com.palm.stark.gmessages.json $A/
+cp -f $APP/account/images/* $A/images/ 2>/dev/null
+cp -f $APP/gmrelay.upstart /var/palm/event.d/com.palm.stark.gmrelay
+# The accounts service reads account descriptions when it starts.
+luna-send -n 1 palm://com.palm.service.accounts/__quit '{}' </dev/null >/dev/null 2>&1
+sync
+stop com.palm.stark.gmrelay 2>/dev/null
+start com.palm.stark.gmrelay 2>/dev/null
+exit 0
