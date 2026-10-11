@@ -21,7 +21,7 @@ enyo.kind({
 						"Your conversations then appear in Messaging, and replies go out through the phone."},
 					{kind: "RowGroup", caption: "On this TouchPad (Atlas)", components: [
 						{className: "gm-help gm-in-group", content: "In the Atlas browser, sign in to Google and open " +
-							"messages.google.com once. Then tap this. Nothing leaves the tablet."},
+							"messages.google.com/web once (sign in there too if it asks). Then tap this. Nothing leaves the tablet."},
 						{kind: "Button", caption: "Pair from Atlas", onclick: "atlasClick"}
 					]},
 					{kind: "RowGroup", caption: "With a QR code", components: [

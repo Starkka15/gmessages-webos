@@ -37,11 +37,18 @@ then `tools\install.ps1`.
 
 ## Pairing
 
-- Where the phone offers a QR code: `tools\pair-from-pc.ps1` shows the code on the PC.
-- Where it does not (the United States, at the time of writing): `tools\pair-google.ps1
-  <file>`, with a file holding the cookies of a browser signed in to the phone's Google
-  account. The script says how to get them. Those cookies are a full sign-in to that account
-  and are kept on the tablet; treat the tablet accordingly.
+Open **Google Messages** on the TouchPad (from the launcher, or Accounts → Add an account) and
+pick a way to pair:
+
+- **On the tablet, from Atlas (no computer or phone browser needed).** In the Atlas browser,
+  sign in to Google and open **messages.google.com/web** once — sign in there too if it asks,
+  so Google sets the OSID cookie that pairing needs — then tap **Pair from Atlas**. Confirm the
+  picture on your phone.
+- **With a QR code**, where the phone still offers QR pairing.
+- **With your Google account from another device**, when neither of the above fits:
+  `tools\pair-google.ps1 <file>` takes a file of cookies from a browser signed in to Google.
+
+Whatever the route, the sign-in is kept on the tablet; treat the tablet accordingly.
 
 ## License
 
