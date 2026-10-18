@@ -61,13 +61,26 @@ type bridge struct {
 	// The account is made by the Accounts app (pairing was started from its page),
 	// so the relay waits for it instead of making one.
 	external bool
+
+	// Messages whose full-size picture has been asked for (once each per run).
+	fullAsked map[string]bool
+	// Attachments waiting for the media worker, by message id.
+	fetching map[string]bool
+	media    chan func()
 }
 
 func newBridge(r *Relay) *bridge {
-	b := &bridge{r: r, jobs: make(chan func(), 256), byAddr: map[string]string{}}
+	b := &bridge{r: r, jobs: make(chan func(), 256), byAddr: map[string]string{}, fullAsked: map[string]bool{}, fetching: map[string]bool{}, media: make(chan func(), 1024)}
 	// One worker, so database work happens in the order things arrived.
 	go func() {
 		for job := range b.jobs {
+			job()
+		}
+	}()
+	// Downloads for messages already stored run apart, one at a time, so a batch
+	// of pictures never holds up sending.
+	go func() {
+		for job := range b.media {
 			job()
 		}
 	}()
@@ -520,6 +533,12 @@ func mediaExt(mime, name string) string {
 	return "bin"
 }
 
+// Whether a message's file is none yet or one the relay saved. A message sent
+// from the tablet shows the file that was picked, which stays as it is.
+func ownFile(path string) bool {
+	return path == "" || strings.HasPrefix(path, mediaRoot+"/")
+}
+
 // Keep a conversation or message id safe to use as a file name.
 func safeName(s string) string {
 	out := make([]byte, 0, len(s))
@@ -538,10 +557,11 @@ func safeName(s string) string {
 }
 
 // Fetch a message's first real attachment and save it on the tablet, returning
-// the file's path. "" when there is none or it could not be fetched; a failure
-// here never stops the message being stored (it keeps its "[Picture]" text).
+// the file's path and whether it is only a thumbnail. "" when there is none or
+// it could not be fetched; a failure here never stops the message being stored
+// (it keeps its "[Picture]" text).
 // Media bytes and keys are never logged.
-func (b *bridge) mediaPath(m Message) string {
+func (b *bridge) mediaPath(m Message) (path string, thumb bool) {
 	var md Media
 	for _, x := range m.Media {
 		if x.ID != "" || x.ThumbID != "" || len(x.Data) > 0 {
@@ -554,12 +574,27 @@ func (b *bridge) mediaPath(m Message) string {
 			// Usually the phone is still fetching it; a later update brings it.
 			b.r.log.Info().Str("status", m.Status).Msg("an attachment has nothing to fetch yet")
 		}
-		return ""
+		return "", false
 	}
 	dir := filepath.Join(mediaRoot, safeName(m.Conv))
-	path := filepath.Join(dir, safeName(m.ID)+"."+mediaExt(md.Mime, md.Name))
-	if fi, err := os.Stat(path); err == nil && fi.Size() > 0 {
-		return path // already have it
+	ext := mediaExt(md.Mime, md.Name)
+	path = filepath.Join(dir, safeName(m.ID)+"."+ext)
+	if md.ID == "" && md.ThumbID != "" {
+		// Only a thumbnail: keep it under its own name, and ask the phone to send
+		// the full picture, which comes back as an update to the message.
+		full := path
+		path = filepath.Join(dir, safeName(m.ID)+".thumb."+ext)
+		thumb = true
+		// Thumbnails saved before they had their own name sit under the full one.
+		if _, err := os.Stat(path); err != nil {
+			os.Rename(full, path)
+		}
+		b.requestFull(m.ID, md.ActionID)
+		if fi, err := os.Stat(path); err == nil && fi.Size() > 0 {
+			return path, true
+		}
+	} else if fi, err := os.Stat(path); err == nil && fi.Size() > 0 {
+		return path, false // already have it
 	}
 	// The full picture if it is there, else the thumbnail, else bytes sent inline —
 	// the order the Messages web client itself uses.
@@ -570,7 +605,7 @@ func (b *bridge) mediaPath(m Message) string {
 		cli := b.r.cli
 		b.r.mu.Unlock()
 		if cli == nil {
-			return ""
+			return "", false
 		}
 		if md.ID != "" {
 			rc, err = cli.DownloadMedia(md.ID, md.Key)
@@ -582,17 +617,17 @@ func (b *bridge) mediaPath(m Message) string {
 	}
 	if err != nil {
 		b.r.log.Warn().Err(err).Msg("a message's media could not be fetched")
-		return ""
+		return "", false
 	}
 	defer rc.Close()
 	if err = os.MkdirAll(dir, 0o755); err != nil {
 		b.r.log.Warn().Err(err).Msg("the media folder could not be made")
-		return ""
+		return "", false
 	}
 	f, err := os.Create(path)
 	if err != nil {
 		b.r.log.Warn().Err(err).Msg("the media file could not be made")
-		return ""
+		return "", false
 	}
 	_, err = io.Copy(f, rc)
 	if closeErr := f.Close(); err == nil {
@@ -601,9 +636,9 @@ func (b *bridge) mediaPath(m Message) string {
 	if err != nil {
 		os.Remove(path)
 		b.r.log.Warn().Err(err).Msg("the media could not be saved")
-		return ""
+		return "", false
 	}
-	return path
+	return path, thumb
 }
 
 // A message as Messaging stores one. old: it is history, not news. filePath: a
@@ -645,6 +680,7 @@ func (b *bridge) object(m Message, conv *gmproto.Conversation, old bool, filePat
 		// The Messaging app shows an image inline, or a tappable chip for video
 		// and audio, from this path (it adds the file:// itself).
 		obj["filePath"] = filePath
+		obj["gmThumb"] = strings.Contains(filepath.Base(filePath), ".thumb.")
 	}
 	if m.FromMe {
 		obj["folder"] = "outbox"
@@ -720,18 +756,17 @@ func (b *bridge) message(m Message) {
 			return
 		}
 		if len(found) > 0 {
-			// Seen before: its delivery status can have changed, and a picture
-			// the phone was still fetching (stored as "[Picture]") can have arrived.
+			// Seen before: its delivery status can have changed, a picture the
+			// phone was still fetching (stored as "[Picture]") can have arrived, or
+			// the full-size one in place of a thumbnail.
 			props := map[string]any{}
 			if m.FromMe && found[0]["status"] != b.status(m) {
 				props["status"] = b.status(m)
 			}
-			if fp, _ := found[0]["filePath"].(string); fp == "" && len(m.Media) > 0 {
-				if filePath := b.mediaPath(m); filePath != "" {
-					if conv := b.conversation(m.Conv); conv != nil {
-						props["filePath"] = filePath
-						props["messageText"] = b.object(m, conv, true, filePath)["messageText"]
-					}
+			fp, _ := found[0]["filePath"].(string)
+			if len(m.Media) > 0 && ownFile(fp) {
+				if conv := b.conversation(m.Conv); conv != nil {
+					b.fetchLater(m, conv, found[0]["_id"], fp)
 				}
 			}
 			if len(props) > 0 {
@@ -746,7 +781,7 @@ func (b *bridge) message(m Message) {
 		// News only if it is recent; a phone catching up sends old ones too.
 		old := time.Since(time.UnixMilli(m.Time)) > 10*time.Minute
 		// A live message fetches its picture or video now.
-		filePath := b.mediaPath(m)
+		filePath, _ := b.mediaPath(m)
 		if _, err = call("palm://com.palm.db/put", map[string]any{"objects": []any{b.object(m, conv, old, filePath)}}); err != nil {
 			b.r.log.Warn().Err(err).Msg("a message could not be stored")
 			return
@@ -835,7 +870,8 @@ func (b *bridge) syncConversation(cli interface {
 		return 0
 	}
 	have := map[string]bool{}
-	noFile := map[string]any{} // gmId → _id of stored messages without a saved attachment
+	dbIDOf := map[string]any{}    // gmId → _id of each stored message
+	fileOf := map[string]string{} // gmId → the attachment it shows, if any
 	found, err := dbFind(map[string]any{
 		"from": kindMessage, "where": []any{where("gmConv", c.GetConversationID())}, "select": []string{"_id", "gmId", "filePath"}, "limit": 500,
 	})
@@ -846,27 +882,21 @@ func (b *bridge) syncConversation(cli interface {
 	for _, obj := range found {
 		if id, ok := obj["gmId"].(string); ok {
 			have[id] = true
-			if fp, _ := obj["filePath"].(string); fp == "" {
-				noFile[id] = obj["_id"]
-			}
+			dbIDOf[id] = obj["_id"]
+			fileOf[id], _ = obj["filePath"].(string)
 		}
 	}
-	// A picture stored as "[Picture]" (the phone was still fetching it, the
-	// download failed, or it predates fetching all history) is fetched now.
-	fetched := 0
+	// A stored message whose attachment is missing ("[Picture]": the phone was
+	// still fetching it, the download failed, or it predates fetching all
+	// history) is fetched, on the media worker; a thumbnail asks the phone for the
+	// full size again. Files already saved cost only a stat.
 	for _, raw := range resp.GetMessages() {
 		m := b.r.plainMessage(raw)
-		dbID, ok := noFile[m.ID]
-		if !ok || len(m.Media) == 0 {
+		dbID, ok := dbIDOf[m.ID]
+		if !ok || len(m.Media) == 0 || !ownFile(fileOf[m.ID]) {
 			continue
 		}
-		if filePath := b.mediaPath(m); filePath != "" {
-			b.merge(dbID, map[string]any{"filePath": filePath, "messageText": b.object(m, c, true, filePath)["messageText"]})
-			fetched++
-		}
-	}
-	if fetched > 0 {
-		b.r.log.Info().Int("pictures", fetched).Msg("stored messages got their attachments")
+		b.fetchLater(m, c, dbID, fileOf[m.ID])
 	}
 	// Oldest first: the threader takes them in the order they were stored, and the
 	// last one it sees becomes the conversation's summary and its place in the list.
@@ -882,7 +912,7 @@ func (b *bridge) syncConversation(cli interface {
 	for _, m := range fresh {
 		// Every attachment in the synced history is fetched (at most syncMessages
 		// per conversation, and each only once: a saved file is kept).
-		filePath := b.mediaPath(m)
+		filePath, _ := b.mediaPath(m)
 		objects = append(objects, b.object(m, c, true, filePath))
 	}
 	if len(objects) == 0 {
@@ -981,4 +1011,68 @@ func (b *bridge) send(addr, text, file string) (tmpID, conv string, err error) {
 	}
 	tmpID, err = b.r.sendMessage(ctx, cli, conv, text, file)
 	return tmpID, conv, err
+}
+
+// Ask the phone to send a message's full-size picture; it answers by updating
+// the message with the full media, which message() then fetches.
+func (b *bridge) requestFull(msgID, actionID string) {
+	if actionID == "" {
+		return
+	}
+	b.mu.Lock()
+	asked := b.fullAsked[msgID]
+	b.fullAsked[msgID] = true
+	b.mu.Unlock()
+	if asked {
+		return
+	}
+	b.r.mu.Lock()
+	cli := b.r.cli
+	b.r.mu.Unlock()
+	if cli == nil {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		if _, err := cli.GetFullSizeImage(ctx, msgID, actionID); err != nil {
+			b.r.log.Warn().Err(err).Msg("the full-size picture could not be asked for")
+		}
+	}()
+}
+
+// Fetch the attachment of a message already stored, on the media worker, and
+// point the message at it if that changes what it shows (fp, now). False when
+// it was not queued: already waiting, or the queue is full.
+func (b *bridge) fetchLater(m Message, conv *gmproto.Conversation, dbID any, fp string) bool {
+	b.mu.Lock()
+	if b.fetching[m.ID] {
+		b.mu.Unlock()
+		return false
+	}
+	b.fetching[m.ID] = true
+	b.mu.Unlock()
+	done := func() {
+		b.mu.Lock()
+		delete(b.fetching, m.ID)
+		b.mu.Unlock()
+	}
+	job := func() {
+		defer done()
+		filePath, _ := b.mediaPath(m)
+		if filePath == "" || filePath == fp {
+			return
+		}
+		obj := b.object(m, conv, true, filePath)
+		b.do(func() {
+			b.merge(dbID, map[string]any{"filePath": filePath, "gmThumb": obj["gmThumb"], "messageText": obj["messageText"]})
+		})
+	}
+	select {
+	case b.media <- job:
+		return true
+	default:
+		done()
+		return false
+	}
 }

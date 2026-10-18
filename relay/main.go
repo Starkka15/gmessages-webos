@@ -77,6 +77,7 @@ type Media struct {
 	ThumbID  string `json:"-"`
 	ThumbKey []byte `json:"-"`
 	Data     []byte `json:"-"`
+	ActionID string `json:"-"` // the part's id, for asking the phone for the full-size picture
 }
 
 type Person struct {
@@ -686,7 +687,7 @@ func (r *Relay) plainMessage(m *gmproto.Message) Message {
 			out.Media = append(out.Media, Media{Mime: media.GetMimeType(), Name: media.GetMediaName(), Size: media.GetSize(),
 				ID: media.GetMediaID(), Key: media.GetDecryptionKey(),
 				ThumbID: media.GetThumbnailMediaID(), ThumbKey: media.GetThumbnailDecryptionKey(),
-				Data: media.GetMediaData()})
+				Data: media.GetMediaData(), ActionID: part.GetActionMessageID()})
 		}
 	}
 	return out
