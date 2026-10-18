@@ -550,6 +550,10 @@ func (b *bridge) mediaPath(m Message) string {
 		}
 	}
 	if md.ID == "" && md.ThumbID == "" && len(md.Data) == 0 {
+		if len(m.Media) > 0 {
+			// Usually the phone is still fetching it; a later update brings it.
+			b.r.log.Info().Str("status", m.Status).Msg("an attachment has nothing to fetch yet")
+		}
 		return ""
 	}
 	dir := filepath.Join(mediaRoot, safeName(m.Conv))
@@ -716,9 +720,22 @@ func (b *bridge) message(m Message) {
 			return
 		}
 		if len(found) > 0 {
-			// Seen before: only its delivery status can have changed.
+			// Seen before: its delivery status can have changed, and a picture
+			// the phone was still fetching (stored as "[Picture]") can have arrived.
+			props := map[string]any{}
 			if m.FromMe && found[0]["status"] != b.status(m) {
-				b.merge(found[0]["_id"], map[string]any{"status": b.status(m)})
+				props["status"] = b.status(m)
+			}
+			if fp, _ := found[0]["filePath"].(string); fp == "" && len(m.Media) > 0 {
+				if filePath := b.mediaPath(m); filePath != "" {
+					if conv := b.conversation(m.Conv); conv != nil {
+						props["filePath"] = filePath
+						props["messageText"] = b.object(m, conv, true, filePath)["messageText"]
+					}
+				}
+			}
+			if len(props) > 0 {
+				b.merge(found[0]["_id"], props)
 			}
 			return
 		}
@@ -818,8 +835,9 @@ func (b *bridge) syncConversation(cli interface {
 		return 0
 	}
 	have := map[string]bool{}
+	noFile := map[string]any{} // gmId → _id of stored messages without a saved attachment
 	found, err := dbFind(map[string]any{
-		"from": kindMessage, "where": []any{where("gmConv", c.GetConversationID())}, "select": []string{"gmId"}, "limit": 500,
+		"from": kindMessage, "where": []any{where("gmConv", c.GetConversationID())}, "select": []string{"_id", "gmId", "filePath"}, "limit": 500,
 	})
 	if err != nil {
 		b.r.log.Warn().Err(err).Msg("the database could not be searched")
@@ -828,6 +846,21 @@ func (b *bridge) syncConversation(cli interface {
 	for _, obj := range found {
 		if id, ok := obj["gmId"].(string); ok {
 			have[id] = true
+			if fp, _ := obj["filePath"].(string); fp == "" {
+				noFile[id] = obj["_id"]
+			}
+		}
+	}
+	// A recent picture stored as "[Picture]" (the phone was still fetching it, or
+	// the download failed) is fetched again now.
+	for _, raw := range resp.GetMessages() {
+		m := b.r.plainMessage(raw)
+		dbID, ok := noFile[m.ID]
+		if !ok || len(m.Media) == 0 || time.Since(time.UnixMilli(m.Time)) > 7*24*time.Hour {
+			continue
+		}
+		if filePath := b.mediaPath(m); filePath != "" {
+			b.merge(dbID, map[string]any{"filePath": filePath, "messageText": b.object(m, c, true, filePath)["messageText"]})
 		}
 	}
 	// Oldest first: the threader takes them in the order they were stored, and the
