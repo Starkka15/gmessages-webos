@@ -599,6 +599,9 @@ func (r *Relay) handleEvent(raw any) {
 		r.mu.Unlock()
 		if r.bridge != nil {
 			r.bridge.remember(evt)
+			if !evt.GetUnread() {
+				r.bridge.convRead(evt.GetConversationID())
+			}
 		}
 		conv := plainConversation(evt)
 		r.push(Event{Kind: "conversation", Conversation: &conv})

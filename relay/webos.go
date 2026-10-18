@@ -85,6 +85,7 @@ func newBridge(r *Relay) *bridge {
 		}
 	}()
 	go b.watchOutbox()
+	go b.watchRead()
 	return b
 }
 
@@ -185,6 +186,10 @@ func (b *bridge) setup(me string) error {
 				{"name": "gmId", "props": []map[string]any{{"name": "gmId"}}},
 				{"name": "gmTmpId", "props": []map[string]any{{"name": "gmTmpId"}}},
 				{"name": "gmConv", "props": []map[string]any{{"name": "gmConv"}}},
+				// Read on the tablet, not yet told to the phone; and a conversation's
+				// unread ones, for when it is read on the phone.
+				{"name": "readHere", "props": []map[string]any{{"name": "gmUnread"}, {"name": "flags.read"}}},
+				{"name": "unreadConv", "props": []map[string]any{{"name": "gmConv"}, {"name": "gmUnread"}}},
 			},
 		},
 		{"id": kindCommand, "owner": webosID, "extends": []string{"com.palm.imcommand:1"}, "sync": false},
@@ -708,6 +713,9 @@ func (b *bridge) object(m Message, conv *gmproto.Conversation, old bool, filePat
 		obj["to"] = []any{map[string]any{"addr": me}}
 		if old {
 			obj["flags"] = map[string]any{"read": true, "noNotification": true}
+		} else {
+			// Unread until read here (then the phone is told) or on the phone.
+			obj["gmUnread"] = true
 		}
 	}
 	return obj
@@ -1081,4 +1089,104 @@ func (b *bridge) fetchLater(m Message, conv *gmproto.Conversation, dbID any, fp 
 		done()
 		return false
 	}
+}
+
+// ---- read state ----
+
+// Messages read in Messaging (it sets flags.read) whose phone does not know yet.
+var readHereQuery = map[string]any{"from": kindMessage, "where": []any{where("gmUnread", true), where("flags.read", true)}}
+
+// Wait for conversations to be read in Messaging, forever, and tell the phone.
+func (b *bridge) watchRead() {
+	for {
+		b.mu.Lock()
+		set := b.set
+		b.mu.Unlock()
+		if !set {
+			time.Sleep(3 * time.Second)
+			continue
+		}
+		b.sendRead()
+		// As with the outbox: the watch answers when the query has results, and is
+		// renewed every few minutes in case one is lost.
+		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+		_, _ = luna(ctx, webosID, 2, "palm://com.palm.db/watch", map[string]any{"query": readHereQuery})
+		cancel()
+		time.Sleep(time.Second)
+	}
+}
+
+// Mark on the phone each conversation read here, up to its newest message read.
+// Not on the database worker: it only touches the marker, and should not wait
+// behind (or hold up) storing and sending.
+func (b *bridge) sendRead() {
+	read, err := dbFind(readHereQuery)
+	if err != nil || len(read) == 0 {
+		return
+	}
+	b.r.mu.Lock()
+	cli, state := b.r.cli, b.r.state
+	b.r.mu.Unlock()
+	if cli == nil || state != "ready" {
+		return // told when connected again: the marker stays
+	}
+	type newest struct {
+		id   string
+		time float64
+	}
+	last := map[string]newest{}
+	var cleared []any
+	for _, obj := range read {
+		conv, _ := obj["gmConv"].(string)
+		id, _ := obj["gmId"].(string)
+		t, _ := obj["timestamp"].(float64)
+		if conv != "" && id != "" && t >= last[conv].time {
+			last[conv] = newest{id, t}
+		}
+		cleared = append(cleared, map[string]any{"_id": obj["_id"], "gmUnread": false})
+	}
+	for conv, n := range last {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		err := cli.MarkRead(ctx, conv, n.id)
+		cancel()
+		if err != nil {
+			// Not tried again: a missed read only leaves the phone showing it unread.
+			b.r.log.Warn().Err(err).Msg("a conversation could not be marked read on the phone")
+		}
+	}
+	if _, err = call("palm://com.palm.db/merge", map[string]any{"objects": cleared}); err != nil {
+		b.r.log.Warn().Err(err).Msg("read messages could not be updated")
+	}
+}
+
+// A conversation was read on the phone: mark its messages read here too, and
+// clear the conversation's unread count (a record of the threader's).
+func (b *bridge) convRead(conv string) {
+	b.do(func() {
+		unread, err := dbFind(map[string]any{"from": kindMessage, "where": []any{where("gmConv", conv), where("gmUnread", true)}})
+		if err != nil || len(unread) == 0 {
+			return
+		}
+		objects := make([]any, 0, len(unread))
+		threads := map[any]bool{}
+		for _, obj := range unread {
+			objects = append(objects, map[string]any{"_id": obj["_id"], "gmUnread": false, "flags": map[string]any{"read": true}})
+			if ids, ok := obj["conversations"].([]any); ok {
+				for _, id := range ids {
+					threads[id] = true
+				}
+			}
+		}
+		if _, err = call("palm://com.palm.db/merge", map[string]any{"objects": objects}); err != nil {
+			b.r.log.Warn().Err(err).Msg("messages read on the phone could not be marked here")
+			return
+		}
+		for id := range threads {
+			if _, err = callAs(threaderID, "palm://com.palm.db/merge", map[string]any{
+				"objects": []any{map[string]any{"_id": id, "unreadCount": 0}},
+			}); err != nil {
+				b.r.log.Warn().Err(err).Msg("a conversation's unread count could not be cleared")
+			}
+		}
+	})
 }
