@@ -1043,6 +1043,12 @@ func (r *Relay) handleSend(w http.ResponseWriter, req *http.Request) {
 // Send a text into a conversation. The id returned comes back on the message
 // when the phone reports it, so the two can be matched.
 func (r *Relay) sendText(ctx context.Context, cli *libgm.Client, convID, text string) (string, error) {
+	return r.sendMessage(ctx, cli, convID, text, "")
+}
+
+// Send text, a file (a path on the tablet), or both. The file goes up to Google
+// first and is sent as the message's first part, the text after it.
+func (r *Relay) sendMessage(ctx context.Context, cli *libgm.Client, convID, text, file string) (string, error) {
 	r.mu.Lock()
 	conv := r.convs[convID]
 	r.mu.Unlock()
@@ -1055,6 +1061,17 @@ func (r *Relay) sendText(ctx context.Context, cli *libgm.Client, convID, text st
 		r.convs[convID] = conv
 		r.mu.Unlock()
 	}
+	var parts []*gmproto.MessageInfo
+	if file != "" {
+		media, err := uploadFile(cli, file)
+		if err != nil {
+			return "", err
+		}
+		parts = append(parts, &gmproto.MessageInfo{Data: &gmproto.MessageInfo_MediaContent{MediaContent: media}})
+	}
+	if text != "" {
+		parts = append(parts, &gmproto.MessageInfo{Data: &gmproto.MessageInfo_MessageContent{MessageContent: &gmproto.MessageContent{Content: text}}})
+	}
 	tmpID := util.GenerateTmpID()
 	resp, err := cli.SendMessage(ctx, &gmproto.SendMessageRequest{
 		ConversationID: convID,
@@ -1063,9 +1080,7 @@ func (r *Relay) sendText(ctx context.Context, cli *libgm.Client, convID, text st
 			ConversationID: convID,
 			ParticipantID:  conv.GetDefaultOutgoingID(),
 			TmpID2:         tmpID,
-			MessageInfo: []*gmproto.MessageInfo{{
-				Data: &gmproto.MessageInfo_MessageContent{MessageContent: &gmproto.MessageContent{Content: text}},
-			}},
+			MessageInfo:    parts,
 		},
 		SIMPayload: conv.GetSimCard().GetSIMData().GetSIMPayload(),
 		TmpID:      tmpID,
@@ -1077,6 +1092,47 @@ func (r *Relay) sendText(ctx context.Context, cli *libgm.Client, convID, text st
 		return "", fmt.Errorf("the phone refused the message: %s", status.String())
 	}
 	return tmpID, nil
+}
+
+// Largest file sent: it is held in memory (and encrypted there) to upload.
+const maxUpload = 50 << 20
+
+// Mime types by extension, for files picked on the tablet.
+var uploadMimes = map[string]string{
+	"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png", "gif": "image/gif",
+	"webp": "image/webp", "bmp": "image/bmp",
+	"mp4": "video/mp4", "m4v": "video/mp4", "3gp": "video/3gpp", "mov": "video/quicktime", "webm": "video/webm",
+	"mp3": "audio/mpeg", "ogg": "audio/ogg", "opus": "audio/ogg", "aac": "audio/aac", "m4a": "audio/mp4",
+	"amr": "audio/amr", "wav": "audio/wav",
+	"pdf": "application/pdf", "txt": "text/plain", "vcf": "text/x-vcard",
+}
+
+// Put a file from the tablet up to Google, ready to be part of a message.
+func uploadFile(cli *libgm.Client, path string) (*gmproto.MediaContent, error) {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return nil, fmt.Errorf("the attachment could not be read: %w", err)
+	}
+	if fi.Size() > maxUpload {
+		return nil, fmt.Errorf("the attachment is too big (%d MB; at most %d)", fi.Size()>>20, maxUpload>>20)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("the attachment could not be read: %w", err)
+	}
+	name := filepath.Base(path)
+	mime := uploadMimes[strings.ToLower(strings.TrimPrefix(filepath.Ext(name), "."))]
+	if mime == "" {
+		mime = http.DetectContentType(data)
+		if i := strings.IndexByte(mime, ';'); i >= 0 {
+			mime = mime[:i]
+		}
+	}
+	media, err := cli.UploadMedia(data, name, mime)
+	if err != nil {
+		return nil, fmt.Errorf("the attachment could not be uploaded: %w", err)
+	}
+	return media, nil
 }
 
 func (r *Relay) handleRead(w http.ResponseWriter, req *http.Request) {

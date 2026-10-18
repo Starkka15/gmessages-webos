@@ -926,13 +926,14 @@ func (b *bridge) sendPending() {
 	}
 	for _, obj := range pending {
 		text, _ := obj["messageText"].(string)
+		file, _ := obj["filePath"].(string) // a file picked with the paperclip
 		addr := ""
 		if to, ok := obj["to"].([]any); ok && len(to) > 0 {
 			if first, ok := to[0].(map[string]any); ok {
 				addr, _ = first["addr"].(string)
 			}
 		}
-		tmpID, conv, err := b.send(addr, text)
+		tmpID, conv, err := b.send(addr, text, file)
 		if err != nil {
 			b.r.log.Warn().Err(err).Msg("a message could not be sent")
 			b.merge(obj["_id"], map[string]any{"status": "failed", "errorCode": 1, "gmError": err.Error()})
@@ -942,8 +943,8 @@ func (b *bridge) sendPending() {
 	}
 }
 
-func (b *bridge) send(addr, text string) (tmpID, conv string, err error) {
-	if addr == "" || text == "" {
+func (b *bridge) send(addr, text, file string) (tmpID, conv string, err error) {
+	if addr == "" || (text == "" && file == "") {
 		return "", "", errors.New("nothing to send, or no one to send it to")
 	}
 	b.r.mu.Lock()
@@ -978,6 +979,6 @@ func (b *bridge) send(addr, text string) (tmpID, conv string, err error) {
 		b.r.mu.Unlock()
 		b.remember(c)
 	}
-	tmpID, err = b.r.sendText(ctx, cli, conv, text)
+	tmpID, err = b.r.sendMessage(ctx, cli, conv, text, file)
 	return tmpID, conv, err
 }
