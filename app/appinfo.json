@@ -1,6 +1,6 @@
 {
 	"id": "com.palm.stark.gmessages",
-	"version": "0.1.1",
+	"version": "0.2.0",
 	"vendor": "stark",
 	"type": "web",
 	"main": "index.html",
