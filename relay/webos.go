@@ -579,11 +579,17 @@ func (b *bridge) mediaPath(m Message) (path string, thumb bool) {
 	dir := filepath.Join(mediaRoot, safeName(m.Conv))
 	ext := mediaExt(md.Mime, md.Name)
 	path = filepath.Join(dir, safeName(m.ID)+"."+ext)
-	if md.ID == "" && md.ThumbID != "" {
-		// Only a thumbnail: keep it under its own name, and ask the phone to send
-		// the full picture, which comes back as an update to the message.
+	if md.ID == "" {
+		// Only a thumbnail, or a preview sent inline (a video's arrives while the
+		// phone is still fetching the video): keep it under its own name, and ask
+		// the phone to send the full file, which comes back as an update to the
+		// message. A preview is a picture, whatever the attachment is.
+		thumbExt := ext
+		if !strings.HasPrefix(strings.ToLower(md.Mime), "image/") {
+			thumbExt = "jpg"
+		}
 		full := path
-		path = filepath.Join(dir, safeName(m.ID)+".thumb."+ext)
+		path = filepath.Join(dir, safeName(m.ID)+".thumb."+thumbExt)
 		thumb = true
 		// Thumbnails saved before they had their own name sit under the full one.
 		if _, err := os.Stat(path); err != nil {
