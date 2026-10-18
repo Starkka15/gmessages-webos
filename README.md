@@ -52,4 +52,13 @@ Whatever the route, the sign-in is kept on the tablet; treat the tablet accordin
 
 ## License
 
-AGPL-3.0, as the protocol library is.
+Google Messages for webOS is free software under the GNU Affero General Public
+License, version 3 or (at your option) any later version: see [LICENSE](LICENSE).
+It is AGPL because the protocol library it is built on is.
+
+The relay uses `libgm` from [mautrix-gmessages](https://github.com/mautrix/gmessages)
+(AGPL-3.0-or-later), carried with small patches in `third_party/mautrix-gmessages`
+(see its [PATCHES.md](third_party/mautrix-gmessages/PATCHES.md)) under its own
+[LICENSE](third_party/mautrix-gmessages/LICENSE). The special exceptions in its
+`LICENSE.exceptions` are granted to Beeper and Element only and do not extend to
+this project.
