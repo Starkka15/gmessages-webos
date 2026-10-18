@@ -851,17 +851,22 @@ func (b *bridge) syncConversation(cli interface {
 			}
 		}
 	}
-	// A recent picture stored as "[Picture]" (the phone was still fetching it, or
-	// the download failed) is fetched again now.
+	// A picture stored as "[Picture]" (the phone was still fetching it, the
+	// download failed, or it predates fetching all history) is fetched now.
+	fetched := 0
 	for _, raw := range resp.GetMessages() {
 		m := b.r.plainMessage(raw)
 		dbID, ok := noFile[m.ID]
-		if !ok || len(m.Media) == 0 || time.Since(time.UnixMilli(m.Time)) > 7*24*time.Hour {
+		if !ok || len(m.Media) == 0 {
 			continue
 		}
 		if filePath := b.mediaPath(m); filePath != "" {
 			b.merge(dbID, map[string]any{"filePath": filePath, "messageText": b.object(m, c, true, filePath)["messageText"]})
+			fetched++
 		}
+	}
+	if fetched > 0 {
+		b.r.log.Info().Int("pictures", fetched).Msg("stored messages got their attachments")
 	}
 	// Oldest first: the threader takes them in the order they were stored, and the
 	// last one it sees becomes the conversation's summary and its place in the list.
@@ -875,14 +880,9 @@ func (b *bridge) syncConversation(cli interface {
 	sort.SliceStable(fresh, func(i, j int) bool { return fresh[i].Time < fresh[j].Time })
 	objects := make([]any, 0, len(fresh))
 	for _, m := range fresh {
-		// Backfill does not download every old attachment (a history can be
-		// hundreds); only the last day's media is fetched, the rest keep their
-		// "[Picture]" text until the conversation is opened and scrolled... for
-		// now, simply the recent ones.
-		filePath := ""
-		if time.Since(time.UnixMilli(m.Time)) < 24*time.Hour {
-			filePath = b.mediaPath(m)
-		}
+		// Every attachment in the synced history is fetched (at most syncMessages
+		// per conversation, and each only once: a saved file is kept).
+		filePath := b.mediaPath(m)
 		objects = append(objects, b.object(m, c, true, filePath))
 	}
 	if len(objects) == 0 {
